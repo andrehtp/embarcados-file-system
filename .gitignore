@@ -1,0 +1,77 @@
+# ==========================================
+# .gitignore para projetos ESP-IDF
+# ==========================================
+
+# --- Saída de build (CMake/Ninja) ---
+build/
+build-*/
+cmake-build-*/
+
+# --- Configuração (menuconfig) ---
+# sdkconfig é gerado a partir de sdkconfig.defaults.
+# Versione apenas sdkconfig.defaults (e variantes por alvo,
+# ex.: sdkconfig.defaults.esp32s3).
+sdkconfig
+sdkconfig.old
+sdkconfig.ci*.old
+
+# --- IDF Component Manager ---
+# Componentes baixados do registry (reconstruídos a partir do idf_component.yml).
+# dependencies.lock DEVE ser versionado para builds reprodutíveis (não ignorar).
+managed_components/
+
+# --- Artefatos de flash/firmware ---
+# Padrões do git diferenciam maiúsculas: *.bin NÃO cobre PARTICAO.BIN.
+*.bin
+*.BIN
+*.elf
+*.map
+flasher_args.json
+flash_args
+flash_project_args
+
+# --- Testes Linux (gcc) ---
+/teste
+
+# --- Python (scripts auxiliares, pytest-embedded) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+pytest-embedded/
+*.log
+
+# --- Testes / cobertura ---
+coverage/
+*.gcda
+*.gcno
+gcovr_report/
+
+# --- Editores e IDEs ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+.#*
+\#*#
+.clangd/
+.cache/
+compile_commands.json
+
+# --- Sistema operacional ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Dados sensíveis ---
+.env
+*.pem
+*.key
+secure_boot_signing_key*.pem
+flash_encryption_key*.bin
