@@ -31,14 +31,32 @@ gcc -Wall -g -fsanitize=address -I components/memoria/include \
     components/memoria/memoria_linux.c testes/teste_memoria.c -o teste && ./teste
 ```
 
+Sistema de arquivos (camadas 3 e 4):
+
+```sh
+gcc -Wall -g -fsanitize=address -I components/memoria/include \
+    -I components/sa/include -I components/sa_api/include \
+    components/memoria/memoria_linux.c components/sa/sa.c \
+    components/sa_api/sa_api.c testes/teste_sa.c -o teste_sa && ./teste_sa
+```
+
 Dica: `./teste | grep -v Chamou` esconde os `printf` do professor.
+
+Para inspecionar a partição, abra `ferramentas/ver_particao.html` no navegador e
+escolha o `PARTICAO.BIN`. Abrindo de novo depois de rodar o programa, a página
+mostra os bytes que mudaram.
+
+## Decisões do sistema de arquivos
+
+- Lista de livres guarda **número de bloco** (0..N_BLOCOS-1), não endereço.
+- Bloco lógico 0 do arquivo = `bloco_direto` do inodo; 1..16 = via indireto.
+  Arquivo máximo: 544 bytes.
+- `ARQUIVO` vem de uma tabela estática (um por inodo), sem `malloc`.
+- `meu_fseek` só aceita posições em `[0, tamanho]`.
 
 ## Próximos passos
 
-1. Implementar os componentes `sa` (camada 3) e `sa_api` (camada 4). Já existem
-   como componentes do IDF, mas com `.c`/`.h` vazios. `sa` depende de `memoria`
-   e `sa_api` de `sa` (`PRIV_REQUIRES` no `CMakeLists.txt` de cada um).
-2. `memoria_esp32.c` com I2C de verdade.
+1. `memoria_esp32.c` com I2C de verdade.
 
 ## Detalhes físicos da AT24C512 (para o backend ESP32)
 

@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<!--
+  Visualizador do PARTICAO.BIN.
+  Abra este arquivo no navegador e escolha o PARTICAO.BIN gerado pelo programa
+  (teste_sa ou main). Ao abrir o arquivo de novo, a página mostra o que mudou
+  em relação à versão anterior.
+  O layout segue components/sa/include/sa.h.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Ver PARTICAO.BIN</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; color: #222; background: #fff; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; margin-top: 28px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  table { border-collapse: collapse; font-family: monospace; font-size: 13px; }
+  th, td { border: 1px solid #ccc; padding: 3px 8px; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  tr.mudou td { background: #fff3b0; }
+  .mono { font-family: monospace; }
+  .aviso { color: #b00020; font-weight: bold; }
+  .ok { color: #1b7a3a; }
+  .cinza { color: #888; }
+  .velho { color: #b00020; }
+  .novo { color: #1b7a3a; }
+  #soltar { border: 2px dashed #999; padding: 16px; margin: 10px 0; }
+  #soltar.cima { background: #eef; }
+</style>
+</head>
+<body>
+
+<h1>Visualizador do PARTICAO.BIN</h1>
+
+<div id="soltar">
+  Escolha o arquivo (ou arraste para cá):
+  <input type="file" id="arquivo">
+  <button id="base" disabled>Comparar a partir daqui</button>
+  <div id="info" class="cinza"></div>
+</div>
+
+<div id="saida"></div>
+
+<script>
+/* ---------- Layout (igual a sa.h) ---------- */
+const TAM_MEMORIA   = 65536;
+const NUM_INODOS    = 12;
+const TAM_INODO     = 45;
+const TAM_BLOCO     = 32;
+const END_CABECALHO = 0;
+const END_INODOS    = 2;
+const END_PONTEIROS = END_INODOS + NUM_INODOS * TAM_INODO;               // 542
+const N_BLOCOS      = Math.floor((TAM_MEMORIA - END_PONTEIROS) / (2 + TAM_BLOCO)); // 1911
+const END_DADOS     = END_PONTEIROS + N_BLOCOS * 2;                       // 4364
+const BLOCO_NULO    = 0xFFFF;
+
+let atual = null;      // Uint8Array com o arquivo carregado agora
+let anterior = null;   // versão anterior, para comparar
+
+/* ---------- Leitura de campos ---------- */
+function u16(mem, pos) { return mem[pos] | (mem[pos + 1] << 8); }   // little-endian
+
+function lerInodo(mem, k) {
+  const e = END_INODOS + k * TAM_INODO;
+  let nome = '';
+  for (let i = 0; i < 8 && mem[e + 1 + i] !== 0; i++) nome += String.fromCharCode(mem[e + 1 + i]);
+  return {
+    endereco: e,
+    status: mem[e],
+    nome: nome,
+    tamanho: u16(mem, e + 9),
+    direto: mem.slice(e + 11, e + 43),
+    indireto: u16(mem, e + 43),
+  };
+}
+
+function enderecoDados(bloco) { return END_DADOS + bloco * TAM_BLOCO; }
+
+/* Os 16 ponteiros guardados dentro do bloco indireto */
+function ponteirosIndireto(mem, ino) {
+  if (ino.indireto === BLOCO_NULO || ino.indireto >= N_BLOCOS) return [];
+  const p = [];
+  for (let i = 0; i < 16; i++) p.push(u16(mem, enderecoDados(ino.indireto) + 2 * i));
+  return p;
+}
+
+/* Conteúdo do arquivo: bloco direto + blocos apontados pelo indireto */
+function conteudo(mem, ino) {
+  const bytes = [];
+  for (let i = 0; i < TAM_BLOCO; i++) bytes.push(ino.direto[i]);
+  for (const b of ponteirosIndireto(mem, ino)) {
+    if (b === BLOCO_NULO || b >= N_BLOCOS) break;
+    for (let i = 0; i < TAM_BLOCO; i++) bytes.push(mem[enderecoDados(b) + i]);
+  }
+  return bytes.slice(0, ino.tamanho);
+}
+
+function texto(bytes) {
+  return bytes.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '·').join('');
+}
+function hex2(b) { return b.toString(16).toUpperCase().padStart(2, '0'); }
+function hex4(v) { return '0x' + v.toString(16).toUpperCase().padStart(4, '0'); }
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+/* Nome da região de um endereço (usado na lista de mudanças) */
+function regiao(pos) {
+  if (pos < END_INODOS) return 'cabeçalho';
+  if (pos < END_PONTEIROS) {
+    const k = Math.floor((pos - END_INODOS) / TAM_INODO);
+    const off = (pos - END_INODOS) % TAM_INODO;
+    let campo;
+    if (off === 0) campo = 'status';
+    else if (off < 9) campo = 'nome';
+    else if (off < 11) campo = 'tamanho';
+    else if (off < 43) campo = 'bloco direto';
+    else campo = 'ponteiro indireto';
+    return 'inodo ' + k + ' (' + campo + ')';
+  }
+  if (pos < END_DADOS) return 'ponteiro do bloco ' + Math.floor((pos - END_PONTEIROS) / 2);
+  return 'dados do bloco ' + Math.floor((pos - END_DADOS) / TAM_BLOCO);
+}
+
+/* ---------- Lista de livres ---------- */
+function percorreLivres(mem) {
+  const livres = [];
+  const visto = new Set();
+  let b = u16(mem, END_CABECALHO);
+  let erro = '';
+  while (b !== BLOCO_NULO) {
+    if (b >= N_BLOCOS) { erro = 'ponteiro inválido: ' + b; break; }
+    if (visto.has(b))  { erro = 'ciclo na lista (bloco ' + b + ' aparece duas vezes)'; break; }
+    visto.add(b);
+    livres.push(b);
+    b = u16(mem, END_PONTEIROS + 2 * b);
+  }
+  return { livres, visto, erro };
+}
+
+/* ---------- Comparação ---------- */
+/* Agrupa bytes alterados vizinhos que caem na mesma região */
+function diferencas(velho, novo) {
+  const trechos = [];
+  let t = null;
+  for (let i = 0; i < TAM_MEMORIA; i++) {
+    if (velho[i] === novo[i]) { t = null; continue; }
+    const r = regiao(i);
+    if (t && t.regiao === r && t.fim === i) {
+      t.fim = i + 1;
+    } else {
+      t = { inicio: i, fim: i + 1, regiao: r };
+      trechos.push(t);
+    }
+  }
+  return trechos;
+}
+
+/* ---------- Tela ---------- */
+function mostra() {
+  const mem = atual;
+  let h = '';
+
+  const formatada = !(u16(mem, 0) === BLOCO_NULO && mem[END_INODOS] === 0xFF);
+  if (!formatada) h += '<p class="aviso">Partição não formatada (tudo 0xFF).</p>';
+
+  /* 1. Cabeçalho */
+  const primeiro = u16(mem, END_CABECALHO);
+  h += '<h2>Cabeçalho</h2>';
+  h += '<p class="mono">' + hex4(END_CABECALHO) + ': primeiro bloco livre = ' +
+       (primeiro === BLOCO_NULO ? '0xFFFF (nenhum)' : primeiro) + '</p>';
+
+  /* 2. Inodos */
+  const mudouInodo = new Set();
+  let trechos = [];
+  if (anterior) {
+    trechos = diferencas(anterior, mem);
+    for (const t of trechos) {
+      if (t.inicio >= END_INODOS && t.inicio < END_PONTEIROS)
+        mudouInodo.add(Math.floor((t.inicio - END_INODOS) / TAM_INODO));
+    }
+  }
+
+  const donos = new Map();   // bloco -> nome do arquivo (para achar blocos perdidos)
+  h += '<h2>Inodos</h2><table><tr><th>#</th><th>endereço</th><th>status</th><th>nome</th>' +
+       '<th>tamanho</th><th>indireto</th><th>blocos de dados</th><th>conteúdo</th></tr>';
+  for (let k = 0; k < NUM_INODOS; k++) {
+    const ino = lerInodo(mem, k);
+    const ocupado = ino.status === 1;
+    let status = ino.status === 0 ? 'livre' : ocupado ? 'ocupado' : '0x' + hex2(ino.status);
+    let linha = '<td>' + k + '</td><td>' + hex4(ino.endereco) + '</td><td>' + status + '</td>';
+
+    if (ocupado) {
+      const ptrs = ponteirosIndireto(mem, ino).filter(b => b !== BLOCO_NULO);
+      if (ino.indireto !== BLOCO_NULO) donos.set(ino.indireto, ino.nome);
+      for (const b of ptrs) donos.set(b, ino.nome);
+      linha += '<td>' + esc(ino.nome) + '</td><td>' + ino.tamanho + '</td>' +
+               '<td>' + (ino.indireto === BLOCO_NULO ? '<span class="cinza">FFFF</span>' : ino.indireto) + '</td>' +
+               '<td>' + (ptrs.length ? ptrs.join(', ') : '<span class="cinza">só o direto</span>') + '</td>' +
+               '<td>"' + esc(texto(conteudo(mem, ino))) + '"</td>';
+    } else {
+      linha += '<td></td><td></td><td></td><td></td><td></td>';
+    }
+    h += '<tr' + (mudouInodo.has(k) ? ' class="mudou"' : '') + '>' + linha + '</tr>';
+  }
+  h += '</table>';
+
+  /* 3. Lista de livres */
+  const lista = percorreLivres(mem);
+  h += '<h2>Lista de blocos livres</h2>';
+  h += '<p>' + lista.livres.length + ' de ' + N_BLOCOS + ' blocos livres. Início da cadeia: <span class="mono">' +
+       lista.livres.slice(0, 10).join(' → ') + (lista.livres.length > 10 ? ' → …' : ' → FFFF') + '</span></p>';
+  if (lista.erro) h += '<p class="aviso">' + lista.erro + '</p>';
+
+  if (formatada) {
+    const perdidos = [];
+    for (let b = 0; b < N_BLOCOS; b++)
+      if (!lista.visto.has(b) && !donos.has(b)) perdidos.push(b);
+    if (perdidos.length)
+      h += '<p class="aviso">Blocos perdidos (nem livres nem de algum arquivo): ' + perdidos.slice(0, 30).join(', ') +
+           (perdidos.length > 30 ? ' … (' + perdidos.length + ' no total)' : '') + '</p>';
+    else if (!lista.erro)
+      h += '<p class="ok">Todos os blocos estão na lista de livres ou pertencem a um arquivo.</p>';
+  }
+
+  /* 4. Mudanças */
+  h += '<h2>Mudanças em relação à versão anterior</h2>';
+  if (!anterior) {
+    h += '<p class="cinza">Rode o programa de novo e abra o arquivo outra vez para ver o que mudou.</p>';
+  } else if (trechos.length === 0) {
+    h += '<p>Nenhum byte mudou.</p>';
+  } else {
+    const LIMITE = 200;
+    h += '<p>' + trechos.length + ' trecho(s) alterado(s).</p>';
+    h += '<table><tr><th>endereço</th><th>região</th><th>antes</th><th>depois</th></tr>';
+    for (const t of trechos.slice(0, LIMITE)) {
+      const antes  = Array.from(anterior.slice(t.inicio, t.fim), hex2).join(' ');
+      const depois = Array.from(mem.slice(t.inicio, t.fim), hex2).join(' ');
+      h += '<tr><td>' + hex4(t.inicio) + (t.fim - t.inicio > 1 ? '–' + hex4(t.fim - 1) : '') + '</td>' +
+           '<td>' + t.regiao + '</td><td class="velho">' + antes + '</td><td class="novo">' + depois + '</td></tr>';
+    }
+    h += '</table>';
+    if (trechos.length > LIMITE) h += '<p class="cinza">… e mais ' + (trechos.length - LIMITE) + ' trechos.</p>';
+  }
+
+  document.getElementById('saida').innerHTML = h;
+}
+
+/* ---------- Abrir arquivo ---------- */
+function abre(arquivo) {
+  const leitor = new FileReader();
+  leitor.onload = function () {
+    const dados = new Uint8Array(leitor.result);
+    if (dados.length !== TAM_MEMORIA) {
+      document.getElementById('info').textContent =
+        arquivo.name + ' tem ' + dados.length + ' bytes; esperado ' + TAM_MEMORIA + '.';
+      return;
+    }
+    anterior = atual;
+    atual = dados;
+    document.getElementById('info').textContent =
+      arquivo.name + ' carregado às ' + new Date().toLocaleTimeString() +
+      (anterior ? ' (comparando com a versão anterior)' : '');
+    document.getElementById('base').disabled = false;
+    mostra();
+  };
+  leitor.readAsArrayBuffer(arquivo);
+}
+
+document.getElementById('arquivo').onchange = function (e) {
+  if (e.target.files[0]) abre(e.target.files[0]);
+  e.target.value = '';   // permite escolher o mesmo arquivo de novo
+};
+
+document.getElementById('base').onclick = function () {
+  anterior = atual;
+  mostra();
+};
+
+const soltar = document.getElementById('soltar');
+soltar.ondragover = function (e) { e.preventDefault(); soltar.classList.add('cima'); };
+soltar.ondragleave = function () { soltar.classList.remove('cima'); };
+soltar.ondrop = function (e) {
+  e.preventDefault();
+  soltar.classList.remove('cima');
+  if (e.dataTransfer.files[0]) abre(e.dataTransfer.files[0]);
+};
+</script>
+</body>
+</html>
